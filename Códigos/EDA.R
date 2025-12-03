@@ -1,13 +1,19 @@
-# recomendado para leitura de arquivos maiores
-install.packages("data.table")
+install.packages("data.table") # recomendado para leitura de arquivos maiores 
 install.packages("skimr")
 install.packages("discretization")
+install.packages("ranger")
+install.packages("purr")
+install.packages("rlang")
 
 library(data.table)
 library(dplyr)
+library(tibble)
 library(stringr)
 library(skimr)
 library(discretization)
+library(ranger)
+library(purrr)
+library(rlang)
 
 pre_processar <- function(df) {
   # realizar preprocessamento no dataframe
@@ -23,7 +29,11 @@ pre_processar <- function(df) {
                       -policy_code,
                       -earliest_cr_line,
                       -last_pymnt_d,
-                      -last_credit_pull_d) 
+                      -last_credit_pull_d)
+  
+  # TODO: vou remover todas as variáveis que são zero inflated.
+  # Depois eu trato elas.
+  df <- df %>% select(-pub_rec, -out_prncp, -recoveries)
   
   # verifica falores faltantes ou vazios
   res <- rbindlist(
@@ -105,66 +115,208 @@ df_2014 <- df %>% filter(str_detect(issue_d, "2014"))
 df_2014 <- pre_processar(df_2014) # Resultou em uma variável a mais
 df_2014 <- df_2014 %>% select(-issue_d)
 
-paste("Proporção de exemplos de inadimplência na amostra:", mean(df_2014$default))
-
 # TODO: Converter variáveis numéricas em categóricas
 numeric_vars <- df_2014 %>% 
   select(where(is.numeric)) %>% 
   colnames()
 
 # observar histograma de todas as variáveis
-par(mfrow=c(3,3))
-
-for (v in numeric_vars) {
-  hist(df_2014[[v]], main = v, breaks = 30, xlab = "")
+plot_histograma <- function(df) {
+  numeric_vars <- df %>% 
+    select(where(is.numeric)) %>% 
+    colnames()
+  
+  par(mfrow=c(3,3))
+  
+  for (v in numeric_vars) {
+    hist(df[[v]], main = v, breaks = 30, xlab = "")
+  }
 }
+
+plot_histograma(df)
 
 # Algumas variáveis possuem poucos valores distintos, observar:
 unique_counts <- sapply(df_2014 %>% select(where(is.numeric)), function(x) length(unique(x)))
 unique_counts
 
-# Função segura para criar cuts com quantis reais
-safe_cut <- function(x, k = 5, sample_x = NULL) {
-  # x: vetor numérico
-  # k: número desejado de bins
-  # sample_x: vetor usado para calcular quantis (do treino)
-  if (all(is.na(x))) return(list(is_factor = TRUE, factor_result = NA, breaks = NULL))
-  uniq <- unique(na.omit(x))
-  n_uniq <- length(uniq)
-  
-  # se poucos valores distintos -> tratar como factor
-  if (n_uniq <= 1) {
-    # tudo igual -> retorna factor de 1 nível
-    return(list(is_factor = TRUE, factor_result = factor(x), breaks = NULL))
-  } else if (n_uniq <= k) {
-    # poucos níveis: manter como fator com níveis ordenados por valor
-    return(list(is_factor = TRUE, factor_result = factor(x, levels = sort(uniq)), breaks = NULL))
+################################################
+# Verificar importânicia das variáveis antes de aplicar discretização porque
+# a discretização tá sendo meio problemática, preciso agilizar as coisas.
+set.seed(123)
+
+# random forest
+rf <- ranger(default ~ .,
+             data = df_2014,
+             num.trees = 300,
+             importance = 'impurity',
+             probability = FALSE,
+             respect.unordered.factors = "order")
+
+features_importance <- as.data.frame(rf$variable.importance) %>%
+  rownames_to_column(var = "feature") %>% 
+  rename(importance = "rf$variable.importance") %>% 
+  arrange(desc(importance))
+
+# top features
+top25 <- features_importance$feature[1:25] 
+
+df_reduced <- df_2014 %>% select(all_of(c(top25, "default")))
+
+plot_histograma(df_reduced)
+
+# Quantização de variáveis
+# Função principal: quantização com tratamento de zero-inflation
+quantize_with_zero_bin <- function(df,
+                                   vars = NULL,            # vetor de nomes; NULL -> todas numéricas
+                                   k = 5,                  # número desejado de bins (além do bin "Zero")
+                                   train_sample_size = 200000, # amostra para calcular quantis
+                                   zero_label = "Zero",    # rótulo do bin para zeros
+                                   min_unique_to_bin = 5   # se n_unique <= isto, converter em factor
+) {
+  df <- as_tibble(df)
+  # escolher variáveis: todas numéricas por padrão
+  if (is.null(vars)) {
+    vars <- df %>% select(where(is.numeric)) %>% names()
+  } else {
+    # checar existência
+    missing_vars <- setdiff(vars, names(df))
+    if (length(missing_vars) > 0) stop("Variáveis não encontradas: ", paste(missing_vars, collapse = ", "))
   }
   
-  # calcula cortes em sample_x (ou x se sample_x NULL)
-  base_vec <- if (!is.null(sample_x)) sample_x else x
-  probs <- seq(0, 1, length.out = k + 1)
-  cuts <- unique(quantile(base_vec, probs = probs, na.rm = TRUE, type = 7))
+  n <- nrow(df)
+  sample_size <- min(train_sample_size, n)
+  set.seed(123)
+  train_idx <- sample.int(n, sample_size)
+  train_sample <- df %>% slice(train_idx)
   
-  # se cuts gerou menos intervals (ties), reduzir k e recalcular até ter >=2 bins
-  while (length(cuts) <= 2 && length(probs) > 2) {
-    # reduzir k
-    k <- max(2, floor((length(cuts)-1) * 0.8))  # tentativa conservadora
+  cuts_list <- list()
+  df_out <- df
+  
+  for (col in vars) {
+    x_full <- df[[col]]
+    x_sample <- train_sample[[col]]
+    
+    # número de valores distintos (não NA) no conjunto inteiro e no subgrupo não-zero
+    uniq_all <- unique(na.omit(x_full))
+    n_unique_all <- length(uniq_all)
+    
+    # proporção de zeros
+    prop_zero <- mean(x_full == 0, na.rm = TRUE)
+    
+    # se poucos níveis distintos -> tratar como factor (não criar bins)
+    if (n_unique_all <= min_unique_to_bin) {
+      message(glue::glue("[{col}] poucos níveis ({n_unique_all}) → convertendo para factor"))
+      df_out <- df_out %>% mutate( !!sym(col) := as.factor(.data[[col]]) )
+      cuts_list[[col]] <- NULL
+      next
+    }
+    
+    # Se existem zeros > 0, vamos criar um bin 'Zero' e calcular cortes só nos não-zero
+    has_zero <- prop_zero > 0
+    
+    # vetor base para quantis: valores não-zero da amostra (se existirem)
+    if (has_zero) {
+      sample_nonzero <- x_sample[!is.na(x_sample) & x_sample != 0]
+      full_nonzero <- x_full[!is.na(x_full) & x_full != 0]
+    } else {
+      sample_nonzero <- x_sample[!is.na(x_sample)]
+      full_nonzero <- x_full[!is.na(x_full)]
+    }
+    
+    # se não há dados não-zero suficientes, tratar como factor
+    if (length(unique(sample_nonzero)) <= 1 || length(sample_nonzero) < 10) {
+      # fallback: se quase tudo zero ou muito pouco variabilidade -> factor
+      message(glue::glue("[{col}] quase sem valores não-zero ou pouca variabilidade -> convertendo para factor"))
+      df_out <- df_out %>% mutate( !!sym(col) := as.factor(.data[[col]]) )
+      cuts_list[[col]] <- NULL
+      next
+    }
+    
+    # calcular cortes por quantis (em sample_nonzero)
     probs <- seq(0, 1, length.out = k + 1)
-    cuts <- unique(quantile(base_vec, probs = probs, na.rm = TRUE, type = 7))
-  }
-  # se ainda problema (extremo), fallback: equal width via range
-  if (length(cuts) <= 2) {
-    rng <- range(base_vec, na.rm = TRUE)
-    cuts <- seq(rng[1], rng[2], length.out = 3) # 2 bins
-  }
+    cuts <- unique(quantile(sample_nonzero, probs = probs, na.rm = TRUE, type = 7))
+    
+    # se os cortes colapsarem (muitos ties), reduzir k até conseguir pelo menos 2 intervals
+    k_cur <- k
+    while (length(cuts) <= 2 && k_cur > 2) {
+      k_cur <- k_cur - 1
+      probs <- seq(0, 1, length.out = k_cur + 1)
+      cuts <- unique(quantile(sample_nonzero, probs = probs, na.rm = TRUE, type = 7))
+    }
+    # fallback se ainda falhar: criar 2 bins via range
+    if (length(cuts) <= 2) {
+      rng <- range(sample_nonzero, na.rm = TRUE)
+      cuts <- seq(rng[1], rng[2], length.out = 3)
+    }
+    
+    # garantir que cortes sejam aplicáveis ao full_nonzero (expandir limites se necessário)
+    # acrescentar -Inf e +Inf para garantir cobertura e evitar NA por valores fora do range
+    # mas preferimos usar include.lowest = TRUE e right = FALSE
+    # montar labels
+    n_bins_nonzero <- length(cuts) - 1
+    labels_nonzero <- paste0("B", seq_len(n_bins_nonzero))
+    
+    # aplicar: criar coluna nova col_q (factor)
+    new_col <- paste0(col, "_q")
+    df_out <- df_out %>%
+      mutate( !!sym(new_col) := case_when(
+        is.na(.data[[col]]) ~ NA_character_,
+        (.data[[col]] == 0 & has_zero) ~ zero_label,
+        TRUE ~ as.character(cut(.data[[col]],
+                                breaks = cuts,
+                                include.lowest = TRUE,
+                                right = FALSE,
+                                labels = labels_nonzero))
+      ))
+    
+    # transformar em factor com níveis ordenados: Zero (se existir) + B1..Bn
+    if (has_zero) {
+      levels_order <- c(zero_label, labels_nonzero)
+    } else {
+      levels_order <- labels_nonzero
+    }
+    df_out <- df_out %>% mutate( !!sym(new_col) := factor(.data[[new_col]], levels = levels_order, ordered = TRUE) )
+    
+    # salvar cuts (incluindo flag has_zero e labels) para re-aplicação
+    cuts_list[[col]] <- list(cuts = cuts, has_zero = has_zero, labels = levels_order)
+  } # fim loop cols
   
-  # cria factor usando cut (aplicável a todo x)
-  fac <- cut(x, breaks = cuts, include.lowest = TRUE, right = FALSE,
-             labels = paste0("B", seq_len(length(cuts)-1)))
-  return(list(is_factor = FALSE, factor_result = fac, breaks = cuts))
+  return(list(df = df_out, cuts = cuts_list))
 }
 
-safe_cut(df_2014$percent_bc_gt_75)
+# Função auxiliar para reaplicar cuts salvos em um novo dataset (ex.: teste/prod)
+apply_saved_cuts <- function(df_new, cuts_list, zero_label = "Zero") {
+  df_new <- as_tibble(df_new)
+  for (col in names(cuts_list)) {
+    info <- cuts_list[[col]]
+    if (is.null(info)) next
+    cuts <- info$cuts
+    has_zero <- info$has_zero
+    labels <- info$labels
+    new_col <- paste0(col, "_q")
+    
+    df_new <- df_new %>%
+      mutate( !!sym(new_col) := case_when(
+        is.na(.data[[col]]) ~ NA_character_,
+        (.data[[col]] == 0 & has_zero) ~ zero_label,
+        TRUE ~ as.character(cut(.data[[col]],
+                                breaks = cuts,
+                                include.lowest = TRUE,
+                                right = FALSE,
+                                labels = labels[labels != zero_label]))
+      )) %>%
+      mutate( !!sym(new_col) := factor(.data[[new_col]], levels = labels, ordered = TRUE))
+  }
+  return(df_new)
+}
 
+
+# aplicar no meu banco
+res <- quantize_with_zero_bin(df_reduced, k = 5, train_sample_size=10000000)
+df_reduced_cat <- res$df
+
+df_factor_only <- df_reduced_cat %>% 
+  select(where(~ !is.numeric(.x)))
+
+# temos 26 variáveis: variável default + 25 preditoras
 
