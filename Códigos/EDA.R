@@ -4,6 +4,12 @@ install.packages("discretization")
 install.packages("ranger")
 install.packages("purr")
 install.packages("rlang")
+install.packages("bnlearn")
+
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+
+BiocManager::install("Rgraphviz")
 
 library(data.table)
 library(dplyr)
@@ -14,6 +20,8 @@ library(discretization)
 library(ranger)
 library(purrr)
 library(rlang)
+library(bnlearn)
+library(Rgraphviz)
 
 pre_processar <- function(df) {
   # realizar preprocessamento no dataframe
@@ -157,10 +165,16 @@ features_importance <- as.data.frame(rf$variable.importance) %>%
   rename(importance = "rf$variable.importance") %>% 
   arrange(desc(importance))
 
-# top features
-top25 <- features_importance$feature[1:25] 
+# verificar features_importance
+dev.off() # resetar parâmetros dos gráficos
+barplot(features_importance$importance[1:40], names.arg = 1:40)
 
-df_reduced <- df_2014 %>% select(all_of(c(top25, "default")))
+# top k features
+k <- 11
+
+top_k <- features_importance$feature[1:k] 
+
+df_reduced <- df_2014 %>% select(all_of(c(top_k, "default")))
 
 plot_histograma(df_reduced)
 
@@ -312,11 +326,37 @@ apply_saved_cuts <- function(df_new, cuts_list, zero_label = "Zero") {
 
 
 # aplicar no meu banco
-res <- quantize_with_zero_bin(df_reduced, k = 5, train_sample_size=10000000)
+res <- quantize_with_zero_bin(df_reduced, k = 3, train_sample_size=10000000)
 df_reduced_cat <- res$df
 
 df_factor_only <- df_reduced_cat %>% 
   select(where(~ !is.numeric(.x)))
 
-# temos 26 variáveis: variável default + 25 preditoras
+df_factor_only <- as.data.frame(df_factor_only)
+
+# temos k + 1 variáveis: top k preditoras + default
+# vamos fazer a DAG agora
+# Método por score:
+dev.off()
+bn.bds <- hc(df_factor_only, score = "bds")
+graphviz.plot(bn.bds)
+bn.bds2 <- hc(df_factor_only, score = "bds", iss = 10) # não sei o que é esse iss
+graphviz.plot(bn.bds2)
+
+bn.bdeu <- hc(df_factor_only, score = "bde", iss = 10)
+graphviz.plot(bn.bdeu)
+
+bn.restart = hc(df_factor_only, score = "bde", iss = 1, restart = 10, perturb = 5)
+graphviz.plot(bn.restart)
+
+# bnlearn implements several constraint-based algorithms, each with its own 
+#function: pc.stable, gs(), iamb(), mmpc(), si.hiton.pc(), etc.
+cpdag = si.hiton.pc(df_factor_only, undirected = FALSE)
+graphviz.plot(cpdag)
+cpdag2 = pc.stable(df_factor_only, undirected = FALSE)
+graphviz.plot(cpdag2)
+cpdag3 = gs(df_factor_only, undirected = FALSE)
+graphviz.plot(cpdag3)
+cpdag4 = mmpc(df_factor_only, undirected = FALSE)
+graphviz.plot(cpdag4)
 
