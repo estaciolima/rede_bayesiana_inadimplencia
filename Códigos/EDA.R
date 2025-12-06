@@ -1,5 +1,4 @@
 install.packages("data.table") # recomendado para leitura de arquivos maiores 
-install.packages("skimr")
 install.packages("discretization")
 install.packages("ranger")
 install.packages("purr")
@@ -15,7 +14,6 @@ library(data.table)
 library(dplyr)
 library(tibble)
 library(stringr)
-library(skimr)
 library(discretization)
 library(ranger)
 library(purrr)
@@ -155,7 +153,7 @@ set.seed(123)
 # random forest
 rf <- ranger(default ~ .,
              data = df_2014,
-             num.trees = 300,
+             num.trees = 100,
              importance = 'impurity',
              probability = FALSE,
              respect.unordered.factors = "order")
@@ -334,7 +332,7 @@ df_factor_only <- df_reduced_cat %>%
 
 df_factor_only <- as.data.frame(df_factor_only)
 
-# temos k + 1 variáveis: top k preditoras + default
+?# temos k + 1 variáveis: top k preditoras + default
 # vamos fazer a DAG agora
 # Método por score:
 dev.off()
@@ -359,4 +357,15 @@ cpdag3 = gs(df_factor_only, undirected = FALSE)
 graphviz.plot(cpdag3)
 cpdag4 = mmpc(df_factor_only, undirected = FALSE)
 graphviz.plot(cpdag4)
+
+# predições
+cv.bn <- bn.cv(data = df_factor_only, bn = bn.bds, runs = 10,
+      method = "k-fold", folds = 10, loss = "f1",
+      loss.args = list(target = "default"))
+cv.bn
+
+# TODO: dividir dados em treino e teste, observar como outros artigos fizeram e suas métricas
+
+
+
 
