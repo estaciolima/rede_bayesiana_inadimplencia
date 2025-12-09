@@ -83,7 +83,7 @@ df_test %>% count(default) %>% mutate(prop = n/sum(n))
 # escolheu-se observar as feature importances obtidas através de uma random forest
 rf <- ranger(default ~ .,
              data = df_train,
-             num.trees = 500,
+             num.trees = 100,
              importance = 'impurity',
              probability = FALSE,
              respect.unordered.factors = "order")
@@ -101,7 +101,7 @@ barplot(features_importance$importance[1:40],
 
 # top k features
 # k foi definido a partir da observação do barplot
-k <- 13
+k <- 5
 top_k <- features_importance$feature[1:k] 
 df_reduced <- df %>% select(all_of(c(top_k, "default")))
 plot_histograma(df_reduced)
@@ -115,100 +115,48 @@ df_factor_only <- df_reduced_cat %>%
 
 df_factor_only <- as.data.frame(df_factor_only)
 
-df_train <- df_factor_only %>% slice(train_idx)
-df_val <- df_factor_only %>% slice(val_idx)
-df_test <- df_factor_only %>% slice(test_idx)
+df_train2 <- df_factor_only %>% slice(train_idx)
+df_val2 <- df_factor_only %>% slice(val_idx)
+df_test2 <- df_factor_only %>% slice(test_idx)
 
 # temos k + 1 variáveis: top k preditoras + default
 # vamos fazer a DAG agora
 # Método por score:
 dev.off()
-bn.bds <- hc(df_train, score = "bds")
+bn.bds <- hc(df_train2, score = "bds")
 graphviz.plot(bn.bds)
-bn.bds2 <- hc(df_factor_only, score = "bds", iss = 10) # não sei o que é esse iss
+bn.bds2 <- hc(df_train2, score = "bds", iss = 10) # não sei o que é esse iss
 graphviz.plot(bn.bds2)
 
-bn.bdeu <- hc(df_factor_only, score = "bde", iss = 10)
+bn.bdeu <- hc(df_train2, score = "bde", iss = 10)
 graphviz.plot(bn.bdeu)
 
-bn.restart = hc(df_factor_only, score = "bde", iss = 1, restart = 10, perturb = 5)
+bn.restart = hc(df_train2, score = "bde", iss = 1, restart = 10, perturb = 5)
 graphviz.plot(bn.restart)
 
 # bnlearn implements several constraint-based algorithms, each with its own 
 #function: pc.stable, gs(), iamb(), mmpc(), si.hiton.pc(), etc.
-cpdag = si.hiton.pc(df_factor_only, undirected = FALSE)
+cpdag = si.hiton.pc(df_train2, undirected = FALSE)
 graphviz.plot(cpdag)
-cpdag2 = pc.stable(df_factor_only, undirected = FALSE)
+cpdag2 = pc.stable(df_train2, undirected = FALSE)
 graphviz.plot(cpdag2)
-cpdag3 = gs(df_factor_only, undirected = FALSE)
+cpdag3 = gs(df_train2, undirected = FALSE)
 graphviz.plot(cpdag3)
-cpdag4 = mmpc(df_factor_only, undirected = FALSE)
+cpdag4 = mmpc(df_train2, undirected = FALSE)
 graphviz.plot(cpdag4)
-
-# predições
-dag <- bn.bds
-bn_model <- bn.fit(dag, data = df_train)
-
-pred <- predict(bn_model,
-                node = "default",
-                data = df_val)
-
-pred_probs <- predict(bn_model,
-                      node = "default",
-                      data = df_val,
-                      prob = TRUE)
-# acurácia
-mean(pred == df_val$default)
-
-# matriz de confusão
-table(Predito = pred, Real = df_val$default)
-
-# AUC
-probs_matrix <- attr(pred_probs, "prob")
-prob_pos <- probs_matrix["1", ]
-
-roc_obj <- roc(df_val$default, prob_pos)
-auc(roc_obj)
-
-# F1-score
-f1 <- F_meas(pred, df_val$default, relevant = "1")
-f1
-
-# prob_pos = probabilidade prevista da classe positiva
-# y_true = fator com "0"/"1"
-y_true <- df_val$default
-ths <- seq(0, 1, by = 0.01)
-
-f1_vec <- sapply(ths, function(t) {
-  y_pred <- ifelse(prob_pos >= t, "1", "0")
-  y_pred <- factor(y_pred, levels = levels(y_true))
-  conf <- table(Predito = y_pred, Real = y_true)
-  TP <- conf["1", "1"]
-  FP <- conf["1", "0"]
-  FN <- conf["0", "1"]
-  prec <- TP / (TP + FP)
-  rec  <- TP / (TP + FN)
-  2 * prec * rec / (prec + rec)
-})
-
-threshold <- ths[which.max(f1_vec)]
-f1_opt <- max(f1_vec)
-
-paste("Melhor threshold:", threshold)
-paste("Respectivo F1-score:", f1_opt)
 
 # lista de candidatos de estrutura – só usando o TREINO
 candidatos_dag <- list(
-  hc_bde_iss1  = hc(df_train, score = "bde", iss = 1),
-  hc_bde_iss10 = hc(df_train, score = "bde", iss = 10),
-  hc_bds       = hc(df_train, score = "bds")
+  hc_bde_iss1  = hc(df_train2, score = "bde", iss = 1),
+  hc_bde_iss10 = hc(df_train2, score = "bde", iss = 10),
+  hc_bds       = hc(df_train2, score = "bds")
 )
 
 # Se quiser incluir métodos constraint-based, converta CPDAG -> DAG
-cpdag_pc  <- pc.stable(df_train, undirected = FALSE)
+cpdag_pc  <- pc.stable(df_train2, undirected = FALSE)
 dag_pc    <- cextend(cpdag_pc)
 
-cpdag_hit <- si.hiton.pc(df_train, undirected = FALSE)
+cpdag_hit <- si.hiton.pc(df_train2, undirected = FALSE)
 dag_hit   <- cextend(cpdag_hit)
 
 candidatos_dag$pc_stable  <- dag_pc
@@ -217,8 +165,8 @@ candidatos_dag$si_hiton   <- dag_hit
 resultados <- purrr::imap(candidatos_dag, ~{
   cat("Avaliando:", .y, "\n")
   avaliar_bn(dag      = .x,
-             df_train = df_train,
-             df_val   = df_val,
+             df_train = df_train2,
+             df_val   = df_val2,
              target   = "default",
              positive = "1")
 })
@@ -230,7 +178,11 @@ resumo <- purrr::imap_dfr(resultados, ~{
     auc            = .x$metrics$auc,
     F1_default     = .x$metrics$F1_default,
     F1_best        = .x$metrics$F1_best,
-    best_threshold = .x$metrics$best_threshold
+    best_threshold_F1 = .x$metrics$best_threshold_F1,
+    prec_best = .x$metrics$prec_best,
+    best_threshold_prec = .x$metrics$best_threshold_prec,
+    recall_best = .x$metrics$recall_best,
+    best_threshold_rec = .x$metrics$best_threshold_rec
   )
 })
 

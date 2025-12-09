@@ -1,23 +1,53 @@
 #### Funções auxiliares ####
 pre_processar <- function(df) {
+  vars_leakage <- c(
+    # pagamentos já ocorridos
+    "last_pymnt_d", "last_pymnt_amnt",
+    "total_pymnt", "total_pymnt_inv", "total_rec_prncp",
+    "total_rec_int", "total_rec_late_fee",
+    "recoveries", "collection_recovery_fee",
+    
+    # saldos pós-andamento
+    "out_prncp", "out_prncp_inv",
+    "hardship_payoff_balance_amount", "hardship_last_payment_amount",
+    "hardship_amount", "hardship_dpd", "hardship_loan_status",
+    
+    # delinquências e cobranças
+    "num_tl_120dpd_2m", "num_tl_30dpd", "num_tl_90g_dpd_24m",
+    "collections_12_mths_ex_med", "chargeoff_within_12_mths",
+    "sec_app_chargeoff_within_12_mths",
+    "mths_since_last_delinq", "mths_since_last_major_derog",
+    "mths_since_last_record", "mths_since_recent_bc_dlq",
+    "mths_since_recent_revol_delinq",
+    "num_accts_ever_120_pd",
+    "tot_coll_amt", "acc_now_delinq", "delinq_amnt",
+    
+    # hardship
+    "hardship_flag", "hardship_type", "hardship_reason",
+    "hardship_status", "hardship_start_date", "hardship_end_date",
+    "payment_plan_start_date", "hardship_length",
+    "orig_projected_additional_accrued_interest",
+    
+    # settlements
+    "debt_settlement_flag", "debt_settlement_flag_date",
+    "settlement_status", "settlement_date", "settlement_amount",
+    "settlement_percentage", "settlement_term",
+    
+    # derivados do loan_status
+    "pymnt_plan", "next_pymnt_d", "last_credit_pull_d"
+  )
+  
   # realizar preprocessamento no dataframe
-  df_size <- dim(df)[1]
+  df_size <- nrow(df)
   
-  # remover variáveis desnecessárias ou duplicadas
-  df <- df %>% select(-url, 
-                      -funded_amnt_inv, # duplicada
-                      -out_prncp_inv, # duplicada
-                      -total_pymnt_inv, # duplicada
-                      -title,
-                      -id,
-                      -policy_code,
-                      -earliest_cr_line,
-                      -last_pymnt_d,
-                      -last_credit_pull_d)
-  
-  # TODO: vou remover todas as variáveis que são zero inflated.
-  # Depois eu trato elas.
-  df <- df %>% select(-pub_rec, -out_prncp, -recoveries)
+  df <- df %>% select(-any_of(vars_leakage)) %>% 
+    select(-url, # inútil
+           -id, # inútil
+           -policy_code, # inútil
+           -earliest_cr_line, # inútil
+           -funded_amnt_inv, # duplicada
+           -title # duplicada
+           )
   
   # verifica falores faltantes ou vazios
   res <- rbindlist(
@@ -69,10 +99,6 @@ pre_processar <- function(df) {
   # todas essas variáveis são numéricas, mas apresentam poucos valores únicos,
   # logo faz sentido convertê-las diretamente para fatores
   vars_numeric_para_factor <- c("inq_last_6mths",
-                                "acc_now_delinq",
-                                "chargeoff_within_12_mths",
-                                "num_tl_120dpd_2m",
-                                "num_tl_30dpd",
                                 "pub_rec_bankruptcies")
   
   df <- df %>% mutate(across(all_of(vars_numeric_para_factor), as.factor))
@@ -214,132 +240,145 @@ quantize_with_zero_bin <- function(df,
   return(list(df = df_out, cuts = cuts_list))
 }
 
-
-# Função auxiliar para reaplicar cuts salvos em um novo dataset (ex.: teste/prod)
-apply_saved_cuts <- function(df_new, cuts_list, zero_label = "Zero") {
-  df_new <- as_tibble(df_new)
-  for (col in names(cuts_list)) {
-    info <- cuts_list[[col]]
-    if (is.null(info)) next
-    cuts <- info$cuts
-    has_zero <- info$has_zero
-    labels <- info$labels
-    new_col <- paste0(col, "_q")
-    
-    df_new <- df_new %>%
-      mutate( !!sym(new_col) := case_when(
-        is.na(.data[[col]]) ~ NA_character_,
-        (.data[[col]] == 0 & has_zero) ~ zero_label,
-        TRUE ~ as.character(cut(.data[[col]],
-                                breaks = cuts,
-                                include.lowest = TRUE,
-                                right = FALSE,
-                                labels = labels[labels != zero_label]))
-      )) %>%
-      mutate( !!sym(new_col) := factor(.data[[new_col]], levels = labels, ordered = TRUE))
-  }
-  return(df_new)
-}
-
 avaliar_bn <- function(dag,
                        df_train,
                        df_val,
                        target   = "default",
                        positive = "1") {
-  # Ajustar parâmetros
+  # Ajustar parâmetros da BN no treino
   bn_model <- bn.fit(dag, data = df_train)
   
-  # Predizer na validação com prob
+  # Predizer na validação com probabilidade
   pred_probs <- predict(bn_model,
                         node = target,
                         data = df_val,
                         prob = TRUE)
   
-  # Atributo "prob" contém matriz [classes x casos]
+  # Extrair matriz de probabilidades do atributo "prob"
   probs_matrix <- attr(pred_probs, "prob")
+  if (is.null(probs_matrix)) {
+    stop("predict(..., prob = TRUE) não retornou atributo 'prob'.")
+  }
   
-  # Garantir que as linhas sejam as classes na mesma ordem dos levels
+  # Verdadeiro y
+  y_true <- df_val[[target]]
+  if (!is.factor(y_true)) {
+    y_true <- factor(y_true)
+  }
+  levs <- levels(y_true)
+  
+  # Garantir nomes das linhas da matriz de probs
   if (is.null(rownames(probs_matrix))) {
-    rownames(probs_matrix) <- levels(df_val[[target]])
+    # assume que a ordem das linhas corresponde a levels(y_true)
+    rownames(probs_matrix) <- levs
+  }
+  
+  # Checar se a classe positiva existe
+  if (!(positive %in% rownames(probs_matrix))) {
+    stop(paste("Classe positiva", positive,
+               "não encontrada nas linhas de probs_matrix."))
   }
   
   # Probabilidade da classe positiva
   prob_pos <- as.numeric(probs_matrix[positive, ])
   
-  # Verdadeiro
-  y_true <- df_val[[target]]
+  # Classe negativa (assume problema binário)
+  negative <- setdiff(levs, positive)[1]
   
-  # AUC
+  # -------------------------
+  # Métricas com threshold padrão 0.5
+  # -------------------------
+  y_pred_default <- ifelse(prob_pos >= 0.5, positive, negative)
+  y_pred_default <- factor(y_pred_default, levels = levs)
+  
+  acc_default <- mean(y_pred_default == y_true)
+  F1_default  <- caret::F_meas(y_pred_default, y_true, relevant = positive)
+  conf_default <- table(Predito = y_pred_default, Real = y_true)
+  
+  # -------------------------
+  # AUC (usando pROC)
+  # -------------------------
   roc_obj <- pROC::roc(response = y_true,
                        predictor = prob_pos)
   auc_val <- as.numeric(pROC::auc(roc_obj))
   
-  # Predição de classe com threshold 0.5
-  y_pred_default <- ifelse(prob_pos >= 0.5, positive,
-                           setdiff(levels(y_true), positive)[1])
-  y_pred_default <- factor(y_pred_default, levels = levels(y_true))
-  
-  # Acurácia
-  acc_default <- mean(y_pred_default == y_true)
-  
-  # F1 "padrão" com caret
-  F1_default <- caret::F_meas(y_pred_default, y_true, relevant = positive)
-  
-  # Matriz de confusão
-  conf_default <- table(Predito = y_pred_default, Real = y_true)
-  
-  # Varredura de thresholds para F1 ótimo
+  # -------------------------
+  # Varredura de thresholds: precision, recall, F1
+  # -------------------------
   ths <- seq(0, 1, by = 0.01)
   
-  f1_vec <- sapply(ths, function(t) {
-    y_pred <- ifelse(prob_pos >= t, positive,
-                     setdiff(levels(y_true), positive)[1])
-    y_pred <- factor(y_pred, levels = levels(y_true))
+  resultados <- sapply(ths, function(t) {
+    # Predição binária com threshold t
+    y_pred <- ifelse(prob_pos >= t, positive, negative)
+    y_pred <- factor(y_pred, levels = levs)
     
     conf <- table(Predito = y_pred, Real = y_true)
     
-    # Proteger se faltar alguma combinação
-    # (usa get0 com default = 0)
-    get_conf <- function(i, j) {
-      if (all(c(i, j) %in% rownames(conf), c(i, j) %in% colnames(conf))) {
-        return(conf[i, j])
-      } else {
-        return(0)
-      }
+    # Como y_pred e y_true têm levels fixos, conf tem sempre as 2 x 2 combinações
+    TP <- conf[positive, positive]
+    FP <- sum(conf[positive, , drop = FALSE]) - TP
+    FN <- sum(conf[, positive, drop = FALSE]) - TP
+    
+    # Se não tem positivos preditos ou reais, define tudo como 0
+    if ((TP + FP) == 0 || (TP + FN) == 0) {
+      return(c(precision = 0, recall = 0, F1 = 0))
     }
-    
-    TP <- get_conf(positive, positive)
-    FP <- sum(conf[positive, ]) - TP
-    FN <- sum(conf[, positive]) - TP
-    
-    # Se não tem positivos preditos ou reais, F1 = 0
-    if ((TP + FP) == 0 || (TP + FN) == 0) return(0)
     
     prec <- TP / (TP + FP)
     rec  <- TP / (TP + FN)
     
-    if ((prec + rec) == 0) return(0)
+    if ((prec + rec) == 0) {
+      return(c(precision = 0, recall = 0, F1 = 0))
+    }
     
-    2 * prec * rec / (prec + rec)
+    F1 <- 2 * prec * rec / (prec + rec)
+    
+    c(precision = prec,
+      recall    = rec,
+      F1        = F1)
   })
   
-  best_idx <- which.max(f1_vec)
-  best_th  <- ths[best_idx]
-  best_f1  <- f1_vec[best_idx]
+  # resultados é uma matriz 3 x length(ths)
+  f1_vec     <- resultados["F1", ]
+  prec_vec   <- resultados["precision", ]
+  recall_vec <- resultados["recall", ]
   
+  # Melhor F1
+  best_idx_f1 <- which.max(f1_vec)
+  best_th_f1  <- ths[best_idx_f1]
+  best_f1     <- f1_vec[best_idx_f1]
+  
+  # Melhor precision
+  best_idx_prec <- which.max(prec_vec)
+  best_th_prec  <- ths[best_idx_prec]
+  best_prec     <- prec_vec[best_idx_prec]
+  
+  # Melhor recall
+  best_idx_rec <- which.max(recall_vec)
+  best_th_rec  <- ths[best_idx_rec]
+  best_recall  <- recall_vec[best_idx_rec]
+  
+  # -------------------------
+  # Retorno
+  # -------------------------
   list(
     dag      = dag,
     bn_model = bn_model,
     roc      = roc_obj,
     metrics  = list(
-      auc            = auc_val,
-      acc_default    = acc_default,
-      F1_default     = F1_default,
-      conf_default   = conf_default,
-      best_threshold = best_th,
-      F1_best        = best_f1
+      auc                 = auc_val,
+      acc_default         = acc_default,
+      F1_default          = F1_default,
+      conf_default        = conf_default,
+      best_threshold_F1   = best_th_f1,
+      F1_best             = best_f1,
+      best_threshold_prec = best_th_prec,
+      prec_best           = best_prec,
+      best_threshold_rec  = best_th_rec,
+      recall_best         = best_recall
     )
   )
 }
+
 
 
