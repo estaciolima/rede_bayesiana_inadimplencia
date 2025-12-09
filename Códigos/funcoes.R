@@ -46,7 +46,9 @@ pre_processar <- function(df) {
            -policy_code, # inútil
            -earliest_cr_line, # inútil
            -funded_amnt_inv, # duplicada
-           -title # duplicada
+           -title, # duplicada
+           -application_type, # constante
+           -disbursement_method # constante
            )
   
   # verifica falores faltantes ou vazios

@@ -122,8 +122,16 @@ df_test2 <- df_factor_only %>% slice(test_idx)
 # temos k + 1 variáveis: top k preditoras + default
 # vamos fazer a DAG agora
 # Método por score:
+vars_sem_default <- setdiff(colnames(df_train2), "default")
+
+blacklist_default_parent <- data.frame(
+  from = "default",
+  to   = vars_sem_default,
+  stringsAsFactors = FALSE
+)
+
 dev.off()
-bn.bds <- hc(df_train2, score = "bds")
+bn.bds <- hc(df_train2, score = "bds", blacklist = blacklist_default_parent)
 graphviz.plot(bn.bds)
 bn.bds2 <- hc(df_train2, score = "bds", iss = 10) # não sei o que é esse iss
 graphviz.plot(bn.bds2)
@@ -147,16 +155,16 @@ graphviz.plot(cpdag4)
 
 # lista de candidatos de estrutura – só usando o TREINO
 candidatos_dag <- list(
-  hc_bde_iss1  = hc(df_train2, score = "bde", iss = 1),
-  hc_bde_iss10 = hc(df_train2, score = "bde", iss = 10),
-  hc_bds       = hc(df_train2, score = "bds")
+  hc_bde_iss1  = hc(df_train2, score = "bde", iss = 1, blacklist = blacklist_default_parent),
+  hc_bde_iss10 = hc(df_train2, score = "bde", iss = 10, blacklist = blacklist_default_parent),
+  hc_bds       = hc(df_train2, score = "bds", blacklist = blacklist_default_parent)
 )
 
 # Se quiser incluir métodos constraint-based, converta CPDAG -> DAG
-cpdag_pc  <- pc.stable(df_train2, undirected = FALSE)
+cpdag_pc  <- pc.stable(df_train2, undirected = FALSE, blacklist = blacklist_default_parent)
 dag_pc    <- cextend(cpdag_pc)
 
-cpdag_hit <- si.hiton.pc(df_train2, undirected = FALSE)
+cpdag_hit <- si.hiton.pc(df_train2, undirected = FALSE, blacklist = blacklist_default_parent)
 dag_hit   <- cextend(cpdag_hit)
 
 candidatos_dag$pc_stable  <- dag_pc
@@ -187,3 +195,20 @@ resumo <- purrr::imap_dfr(resultados, ~{
 })
 
 resumo
+
+# testar seleção de variáveis com markov blanket
+res <- quantize_with_zero_bin(df, train_idx, k = 3)
+df_reduced_cat <- res$df
+
+df_factor_only <- df_reduced_cat %>% 
+  select(where(~ !is.numeric(.x)))
+
+df_factor_only <- as.data.frame(df_factor_only)
+
+df_train_cat <- df_factor_only %>% slice(train_idx)
+mb_vars <- mmpc(df_train_cat, target = "default")
+
+
+mb_vars <- learn.mb(df_train_cat,
+                    node   = "default",
+                    method = "iamb")

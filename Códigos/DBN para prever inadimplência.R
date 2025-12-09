@@ -2,7 +2,7 @@
 # 0) CARREGAR PACOTES
 ###############################################
 
-packages <- c("dplyr","bnlearn","pROC","caret","tibble", "data.table")
+packages <- c("dplyr","bnlearn","pROC","caret","tibble", "data.table", "stringr")
 for(p in packages){
   if(!require(p, character.only = TRUE)){
     install.packages(p)
