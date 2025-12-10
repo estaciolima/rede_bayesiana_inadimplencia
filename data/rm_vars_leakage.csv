@@ -51,3 +51,5 @@ next_pymnt_d
 last_credit_pull_d
 url
 desc
+purpose
+policy_code

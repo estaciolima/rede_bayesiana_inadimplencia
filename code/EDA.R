@@ -8,10 +8,12 @@ df <- arrow::read_parquet("data/amostra250k.parquet")
 
 df %>% glimpse()
 
-info_df <- skimr::skim(df) 
-
+# tudo que for vazio transforma NA
+df <- df %>%
+  mutate(across(where(is.character), ~ na_if(.x, "")))
+#
 ### Definir a target
-
+#
 df$purpose %>% janitor::tabyl() %>% arrange(desc(n))
 df$loan_status %>% janitor::tabyl() %>% arrange(desc(n))
 
@@ -28,15 +30,17 @@ df <- df %>%
 
 df$default %>% janitor::tabyl() %>% arrange(desc(n))
 
-
+#
 # Remover variáveis irrelevantes
+#
 rm_col <- read.csv('data/rm_vars_leakage.csv') 
 rm_col <- rm_col$vars_leakage
 df <- df %>% select(-all_of(rm_col))
 
-### Variaveis com mais de 50% de dados faltantes 
+# Variaveis com mais de 60% de dados faltantes 
 DataExplorer::plot_missing(df)
 
+info_df <- skimr::skim(df) 
 col_na50 <- info_df %>% 
   filter(complete_rate < 0.6) %>% 
   pull(skim_variable)
@@ -47,29 +51,28 @@ DataExplorer::plot_missing(df)
 
 ### ETL 
 source('code/funcoes.R')
+#
 # Tratar variaveis com cardialidade alta 
+#
 
 # Avaliar cardianilidade das variáveis categóricas
 cat_vars <- df %>% select(where(is.character)) %>% colnames()
-card_cat_vars <- sapply(df %>% select(all_of(cat_vars)), function(x) length(unique(x)))
+card_cat_vars <- sapply(df %>% select(all_of(cat_vars), -id), function(x) length(unique(x)))
 card_cat_vars <- sort(card_cat_vars)
 barplot(card_cat_vars, las=2, cex.names=0.7,horiz = TRUE, main = 'Cardinalidade das variáveis categóricas')
 
-# df <- select(df, -c(id))
-var_card_bins <- card_cat_vars[card_cat_vars > 15]
+var_card_bins <- card_cat_vars[card_cat_vars > 10]
 
 df <- df %>% 
   mutate(across(all_of(cat_vars), ~ if_else(is.na(.x) | .x == "", "Others", .x))) %>% 
   mutate(across(all_of(cat_vars), ~ str_trim(.x) %>% str_to_lower()))
 
-df <- select(df, -c(id)) 
-
 # 2. Definir as variáveis fixas
 cat_vars_to_bin <- c(names(var_card_bins))
 VAR_TARGET <- "default" 
 N_BINS <- 3
-library(rlang)
-df_transformado <- cat_vars_to_bin %>%
+
+dfT <- cat_vars_to_bin %>%
   purrr::reduce(
     .x = ., # A lista de var_cat
     .f = function(data, var_cat_atual) {
@@ -91,59 +94,49 @@ df_transformado <- cat_vars_to_bin %>%
 
 paste0("Risco_", cat_vars_to_bin, "_BIN")
 
-df_transformado %>% select(c(paste0("Risco_", cat_vars_to_bin, "_BIN"), VAR_TARGET)) %>% 
+dfT %>% select(c(paste0("Risco_", cat_vars_to_bin, "_BIN"), VAR_TARGET)) %>% 
   DataExplorer::plot_bar(by = VAR_TARGET)
 
+#
+# Avaliacao
+#
+DataExplorer::plot_bar(dfT %>% select(where(is.character)))
+DataExplorer::plot_histogram(dfT %>% select(where(is.numeric)))
 
+DataExplorer::plot_bar(dfT %>% select(where(is.character),VAR_TARGET), by = VAR_TARGET)
+DataExplorer::plot_boxplot(dfT %>% select(where(is.numeric),VAR_TARGET), by = VAR_TARGET)
 
-### Parei aqui! 
+# 
+# Alta colinearidade
+#
+DataExplorer::plot_correlation(
+  dfT %>% select(where(is.numeric)), 
+  cor_args = list(use = "pairwise.complete.obs")
+  )
 
+# ver grupo com alta colineliaridade
+variaveis_para_remover <- rm_var_alta_corr(
+  df = dfT,
+  target_var = "default",
+  limite_cor_feature = 0.6
+)
 
+print(variaveis_para_remover)
 
-
-### Avaliar variáveis
-DataExplorer::plot_bar(df %>% select(where(is.character)))
-DataExplorer::plot_histogram(df %>% select(where(is.numeric)))
-
-
-
-
-
-library(dplyr)
-library(tidyr)
-
-# --- Variáveis de Exemplo (Ajuste para seu projeto) ---
-VAR_CATEGORICA <- "zip_code"        # Variável com muitas categorias
-VAR_TARGET     <- "default" # Variável de resposta (0/1)
-NOVA_COLUNA    <- "Risco_Estado_BIN" # Nome da nova coluna categorizada
-
-# --- Execução da Transformação ---
-
-dados_transformados <- df %>%
-  # 1. Calcular o Target Encoding (Média da Inadimplência por Categoria)
-  group_by(across(all_of(VAR_CATEGORICA))) %>%
-  mutate(taxa_inad_temp = mean(!!sym(VAR_TARGET), na.rm = TRUE)) %>%
-  ungroup() %>%
-  mutate(
-    !!sym(NOVA_COLUNA) := cut(
-      x = taxa_inad_temp,
-      breaks = quantile(taxa_inad_temp, 
-                        probs = seq(0, 1, 0.25), 
-                        na.rm = TRUE, 
-                        type = 7),
-      include.lowest = TRUE,
-      labels = paste0("Q", 1:4), # Nomes: Q1 (Menor Risco) a Q4 (Maior Risco)
-      ordered_result = TRUE
-    )
-  ) %>%
+if (length(variaveis_para_remover) > 0) {
+  dfT <- dfT %>% 
+    select(-all_of(variaveis_para_remover))
   
-  select(-taxa_inad_temp)
+  cat("\nColunas no DataFrame Final (sem redundância):", names(df_final), "\n")
+}
 
-print(head(dados_transformados %>% select(!!sym(VAR_CATEGORICA), !!sym(VAR_TARGET), !!sym(NOVA_COLUNA))))
+DataExplorer::plot_correlation(dfT %>% select(where(is.numeric)), cor_args = list(use = "pairwise.complete.obs"))
 
-dados_transformados %>%
-  group_by(!!sym(NOVA_COLUNA)) %>%
-  summarise(Media_Target = mean(!!sym(VAR_TARGET)), Contagem = n())
+DataExplorer::plot_bar(dfT %>% select(where(is.character),VAR_TARGET), by = VAR_TARGET)
+DataExplorer::plot_boxplot(dfT %>% select(where(is.numeric),VAR_TARGET), by = VAR_TARGET)
+
+# Parei aqui 
+
 
 
 # filtrar base por um calendário específico

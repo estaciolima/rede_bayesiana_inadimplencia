@@ -421,3 +421,56 @@ create_risk_bins <- function(df, var_cat, var_target, n_bins = 3) {
   
 }
 
+########
+# Remover variáveis com alta correlação entre si, mantendo a mais preditiva para a Target
+rm_var_alta_corr <- function(df, target_var, limite_cor_feature = 0.6) {
+  # --- 1. Preparação dos Dados ---
+  
+  # Garante que as features e o target sejam numéricos
+  df_numerico <- df %>% select(where(is.numeric))
+  
+  # Remove a target temporariamente das features para o cálculo de correlação cruzada
+  features <- df_numerico %>% select(-all_of(target_var))
+  
+  matriz_cor_abs <- features %>%
+    cor(use = "pairwise.complete.obs") %>%
+    abs()
+  
+  pares_correlacionados <- matriz_cor_abs %>%
+    as_tibble(rownames = "var1") %>%
+    pivot_longer(
+      cols = -var1, 
+      names_to = "var2", 
+      values_to = "correlacao_feature"
+    ) %>%
+    filter(
+      correlacao_feature >= limite_cor_feature,
+      var1 != var2,
+      # Mantém apenas a parte triangular superior (var1 vem antes de var2)
+      as.numeric(factor(var1)) < as.numeric(factor(var2))
+    )
+  
+  # --- 3. Correlação com a Target (Poder Preditivo) ---
+  # Calcula a correlação absoluta de todas as features com a Target
+  target_cor <- cor(features, df_numerico[[target_var]], use = "pairwise.complete.obs") %>%
+    abs() %>%
+    as.data.frame() %>%
+    # Transforma a coluna da correlação em um tibble e renomeia
+    rownames_to_column(var = "feature") %>%
+    rename(correlacao_target = V1)
+  
+  # --- 4. Decisão de Remoção e Consolidação ---
+  variaveis_para_remover <- pares_correlacionados %>%
+    # Junta com a correlação da Target para var1
+    left_join(target_cor, by = c("var1" = "feature")) %>%
+    rename(cor_target_var1 = correlacao_target) %>%
+    left_join(target_cor, by = c("var2" = "feature")) %>%
+    rename(cor_target_var2 = correlacao_target) %>%
+    # Decide qual variável remover (a menos preditiva)
+    mutate(remover = if_else(cor_target_var1 >= cor_target_var2, var2, var1)) %>%
+    pull(remover) %>%
+    unique()
+  
+  cat("✅ Variáveis identificadas para remoção (mantendo a mais preditiva para", target_var, "): \n")
+  return(variaveis_para_remover)
+}
