@@ -11,6 +11,7 @@ df %>% glimpse()
 # tudo que for vazio transforma NA
 df <- df %>%
   mutate(across(where(is.character), ~ na_if(.x, "")))
+
 #
 ### Definir a target
 #
@@ -54,12 +55,27 @@ source('code/funcoes.R')
 #
 # Tratar variaveis com cardialidade alta 
 #
+rm_var_nivel_unico <- function(data) {
+
+  colunas_para_manter <- data |>
+    purrr::map_lgl(~ length(unique(.x)) > 1)
+  
+  data[, ..colunas_para_manter]
+}
+
+df <- rm_var_nivel_unico(df)
 
 # Avaliar cardianilidade das variáveis categóricas
 cat_vars <- df %>% select(where(is.character)) %>% colnames()
 card_cat_vars <- sapply(df %>% select(all_of(cat_vars), -id), function(x) length(unique(x)))
 card_cat_vars <- sort(card_cat_vars)
-barplot(card_cat_vars, las=2, cex.names=0.7,horiz = TRUE, main = 'Cardinalidade das variáveis categóricas')
+barplot(
+  card_cat_vars, 
+  las=2,
+  cex.names=0.7,
+  horiz = TRUE,
+  main = 'Cardinalidade das variáveis categóricas'
+  )
 
 var_card_bins <- card_cat_vars[card_cat_vars > 10]
 
@@ -67,7 +83,6 @@ df <- df %>%
   mutate(across(all_of(cat_vars), ~ if_else(is.na(.x) | .x == "", "Others", .x))) %>% 
   mutate(across(all_of(cat_vars), ~ str_trim(.x) %>% str_to_lower()))
 
-# 2. Definir as variáveis fixas
 cat_vars_to_bin <- c(names(var_card_bins))
 VAR_TARGET <- "default" 
 N_BINS <- 3
@@ -127,7 +142,7 @@ if (length(variaveis_para_remover) > 0) {
   dfT <- dfT %>% 
     select(-all_of(variaveis_para_remover))
   
-  cat("\nColunas no DataFrame Final (sem redundância):", names(df_final), "\n")
+  cat("\nColunas no DataFrame Final (sem redundância):", names(dfT), "\n")
 }
 
 DataExplorer::plot_correlation(dfT %>% select(where(is.numeric)), cor_args = list(use = "pairwise.complete.obs"))
@@ -135,13 +150,53 @@ DataExplorer::plot_correlation(dfT %>% select(where(is.numeric)), cor_args = lis
 DataExplorer::plot_bar(dfT %>% select(where(is.character),VAR_TARGET), by = VAR_TARGET)
 DataExplorer::plot_boxplot(dfT %>% select(where(is.numeric),VAR_TARGET), by = VAR_TARGET)
 
+#
+# Selecao parametrica 
+# 
+write_csv(dfT, 'data/df_pre_processado.csv')
+
+# df <- dfT %>% filter(str_detect(issue_d, "2014"))
+df <- read_csv("data/df_pre_processado.csv")
+df <- df %>% sample_n(100000) %>% select(-id)
+
+# NA -> Mediana 
+df <- df |>
+  mutate(across(.cols = where(is.numeric),.fns = ~ replace_na(.x, median(.x, na.rm = TRUE)) ))
+
+df$default <- as.factor(df$default)
+
+# base line.
+mod_nulo <- glm(default ~ 1, 
+                   data = df, 
+                   family = binomial(link = "logit"))
+
+# Completo
+mod_completo <- glm(default ~., 
+                       data = df, 
+                       family = binomial(link = "logit"))
+
+
+mod_stepwise <- step(mod_nulo, 
+                     scope = list(lower = mod_nulo, upper = mod_completo),
+                     direction = "both",
+                     trace = 1) 
+
+summary(mod_stepwise)
+
+formula(modelo_stepwise)
+
 # Parei aqui 
 
 
 
+
+
+
+
+
 # filtrar base por um calendário específico
-df <- df %>% filter(str_detect(issue_d, "2014"))
-df <- pre_processar(df)
+df2 <- df %>% filter(str_detect(issue_d, "2014"))
+
 df <- df %>% select(-issue_d)
 
 
