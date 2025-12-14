@@ -6,11 +6,11 @@ library(rlang)
 #
 df <- arrow::read_parquet("data/amostra250k.parquet")
 
-df %>% glimpse()
-
 # tudo que for vazio transforma NA
 df <- df %>%
   mutate(across(where(is.character), ~ na_if(.x, "")))
+
+df %>% glimpse()
 
 #
 ### Definir a target
@@ -77,13 +77,35 @@ barplot(
   main = 'Cardinalidade das variáveis categóricas'
   )
 
-var_card_bins <- card_cat_vars[card_cat_vars > 10]
+var_card_bins <- card_cat_vars[card_cat_vars > 5]
+var_card_bins %>% names()
+
+df %>% select(all_of(names(var_card_bins)) , default) %>% view()
+
+col_select <- c('zip_code', 'home_ownership','emp_title', 'grade', 'emp_length') 
+
+df$grade %>% janitor::tabyl() 
+df$home_ownership %>% janitor::tabyl() 
+df$emp_length %>% janitor::tabyl() 
 
 df <- df %>% 
-  mutate(across(all_of(cat_vars), ~ if_else(is.na(.x) | .x == "", "Others", .x))) %>% 
-  mutate(across(all_of(cat_vars), ~ str_trim(.x) %>% str_to_lower()))
+  mutate(
+    grade = factor(grade, levels = c('A','B','C','D','E','F','G'), ordered = TRUE),
+    home_is_rent = if_else(home_ownership == 'RENT', 'yes', 'no'),
+    # Detect o numero do string e se for menos que 4, 0 a 4 anos, 4 a 9 anos, mais que 10 anos
+    emp_length = case_when(
+      emp_length %in% c('< 1 year', '1 year', '2 years', '3 years') ~ '0-4 years',
+      emp_length %in% c('4 years', '5 years', '6 years', '7 years', '8 years', '9 years') ~ '4-9 years',
+      emp_length %in% c('10+ years') ~ '10+ years',
+      TRUE ~ 'Others'
+    ),
+    emp_title = if_else(is.na(emp_title) | emp_title == "", "Others", emp_title) %>% 
+      str_trim() %>% str_to_lower()
+    ) %>% select(-home_ownership)
 
-cat_vars_to_bin <- c(names(var_card_bins))
+# df$emp_title <-janitor::make_clean_names(df$emp_title)
+
+cat_vars_to_bin <- c('zip_code', 'emp_title') 
 VAR_TARGET <- "default" 
 N_BINS <- 3
 
@@ -107,19 +129,18 @@ dfT <- cat_vars_to_bin %>%
     .init = df 
   )
 
-paste0("Risco_", cat_vars_to_bin, "_BIN")
+DataExplorer::plot_bar(dfT %>% select(Risco_zip_code_BIN,Risco_emp_title_BIN, grade,emp_length, default), by = "default")
 
-dfT %>% select(c(paste0("Risco_", cat_vars_to_bin, "_BIN"), VAR_TARGET)) %>% 
-  DataExplorer::plot_bar(by = VAR_TARGET)
+dfT <- dfT %>% select(-Risco_emp_title_BIN)
 
 #
 # Avaliacao
 #
-DataExplorer::plot_bar(dfT %>% select(where(is.character)))
-DataExplorer::plot_histogram(dfT %>% select(where(is.numeric)))
+#DataExplorer::plot_bar(dfT %>% select(where(is.character)))
+#DataExplorer::plot_histogram(dfT %>% select(where(is.numeric)))
 
-DataExplorer::plot_bar(dfT %>% select(where(is.character),VAR_TARGET), by = VAR_TARGET)
-DataExplorer::plot_boxplot(dfT %>% select(where(is.numeric),VAR_TARGET), by = VAR_TARGET)
+#DataExplorer::plot_bar(dfT %>% select(where(is.character),VAR_TARGET), by = VAR_TARGET)
+#DataExplorer::plot_boxplot(dfT %>% select(where(is.numeric),VAR_TARGET), by = VAR_TARGET)
 
 # 
 # Alta colinearidade
@@ -138,6 +159,8 @@ variaveis_para_remover <- rm_var_alta_corr(
 
 print(variaveis_para_remover)
 
+variaveis_para_remover <- setdiff(variaveis_para_remover, c("loan_amnt", "installment"))
+
 if (length(variaveis_para_remover) > 0) {
   dfT <- dfT %>% 
     select(-all_of(variaveis_para_remover))
@@ -147,8 +170,20 @@ if (length(variaveis_para_remover) > 0) {
 
 DataExplorer::plot_correlation(dfT %>% select(where(is.numeric)), cor_args = list(use = "pairwise.complete.obs"))
 
-DataExplorer::plot_bar(dfT %>% select(where(is.character),VAR_TARGET), by = VAR_TARGET)
-DataExplorer::plot_boxplot(dfT %>% select(where(is.numeric),VAR_TARGET), by = VAR_TARGET)
+# Selecao prelimiar de variaveis 
+
+col_select <- c(
+  'dti','installment','home_is_rent','grade',
+  'last_fico_range_high', 'pct_tl_nvr_dlq', 'loan_amnt',
+  'Risco_zip_code_BIN', 'mo_sin_old_rev_tl_op', 'annual_inc', 
+  'inq_last_6mths', 'fico_range_low',
+  'default'
+)
+
+dfT <- dfT %>% select(all_of(col_select))
+
+#DataExplorer::plot_bar(dfT %>% select(where(is.character),VAR_TARGET), by = VAR_TARGET)
+#DataExplorer::plot_boxplot(dfT %>% select(where(is.numeric),VAR_TARGET), by = VAR_TARGET)
 
 #
 # Selecao parametrica 
@@ -156,46 +191,54 @@ DataExplorer::plot_boxplot(dfT %>% select(where(is.numeric),VAR_TARGET), by = VA
 write_csv(dfT, 'data/df_pre_processado.csv')
 
 # df <- dfT %>% filter(str_detect(issue_d, "2014"))
-df <- read_csv("data/df_pre_processado.csv")
-df <- df %>% sample_n(100000) %>% select(-id)
+df <- read_csv("data/df_pre_processado.csv") %>% janitor::clean_names()
+
+skimr::skim(df)
+DataExplorer::plot_missing(df)
+
+#df <- df %>% sample_n(100000)
 
 # NA -> Mediana 
 df <- df |>
   mutate(across(.cols = where(is.numeric),.fns = ~ replace_na(.x, median(.x, na.rm = TRUE)) ))
 
-df$default <- as.factor(df$default)
+df$default <- if_else(df$default == 1, 'yes', 'no') %>% as.factor()
 
-# base line.
-mod_nulo <- glm(default ~ 1, 
-                   data = df, 
-                   family = binomial(link = "logit"))
+df <- df |>
+  mutate(across(.cols = where(is.numeric),.fns = ~ replace_na(.x, median(.x, na.rm = TRUE)) ))
 
-# Completo
-mod_completo <- glm(default ~., 
-                       data = df, 
-                       family = binomial(link = "logit"))
+df <- df %>%
+  mutate(across(.cols = where(is.character), .fns = as.factor))
+
+variaveis_numericas <- names(df) %>%
+  setdiff(c("default", "home_is_rent", "grade", "risco_zip_code_bin", "pct_tl_nvr_dlq", "inq_last_6mths", "term")) 
+
+df <- df %>% select(-c("pct_tl_nvr_dlq", "inq_last_6mths"))
+
+df <- df %>%
+  mutate(
+    across(
+      .cols = all_of(variaveis_numericas),
+      # Chamada da função: x = valor da coluna atual; y = valor do target (df$default)
+      .fns = ~ discretizar_var_num(x = ., y = df$default, n_min = 2, n_max = 4),
+      .names = "{.col}_disc"
+    )
+  )
 
 
-mod_stepwise <- step(mod_nulo, 
-                     scope = list(lower = mod_nulo, upper = mod_completo),
-                     direction = "both",
-                     trace = 1) 
+df <- df %>%
+  select(-all_of(variaveis_numericas))
 
-summary(mod_stepwise)
+df %>% glimpse()
 
-formula(modelo_stepwise)
+write.csv(df, 'data/df_final_para_modelagem.csv')
+
+DataExplorer::plot_bar(df, by = "default")
 
 # Parei aqui 
 
-
-
-
-
-
-
-
 # filtrar base por um calendário específico
-df2 <- df %>% filter(str_detect(issue_d, "2014"))
+# df2 <- df %>% filter(str_detect(issue_d, "2014"))
 
 df <- df %>% select(-issue_d)
 
@@ -203,9 +246,6 @@ df <- df %>% select(-issue_d)
 
 # observar histograma de todas as variáveis
 
-
-
-plot_histograma(df)
 
 # Algumas variáveis possuem poucos valores distintos, observar:
 unique_counts <- sapply(df %>% select(where(is.numeric)), function(x) length(unique(x)))
@@ -239,7 +279,6 @@ df_train <- df %>% slice(train_idx)
 df_val   <- df %>% slice(val_idx)
 df_test  <- df %>% slice(test_idx)
 
-
 # 6) Verificar distribuição de default
 df_train %>% count(default) %>% mutate(prop = n/sum(n))
 df_val %>% count(default) %>% mutate(prop = n/sum(n))
@@ -247,7 +286,7 @@ df_test %>% count(default) %>% mutate(prop = n/sum(n))
 
 # usar um método de seleção de variáveis para reduzir a dimensionalidade
 # escolheu-se observar as feature importances obtidas através de uma random forest
-rf <- ranger(default ~ .,
+rf <- ranger::ranger(default ~ .,
              data = df_train,
              num.trees = 100,
              importance = 'impurity',
@@ -263,7 +302,7 @@ features_importance <- as.data.frame(rf$variable.importance) %>%
 dev.off() # resetar parâmetros dos gráficos
 barplot(features_importance$importance[1:40],
         names.arg = features_importance$feature[1:40],
-        las = 2, cex.names = 0.7)
+        las = 2, cex.names = 0.7, horiz = TRUE)
 
 # top k features
 # k foi definido a partir da observação do barplot
@@ -294,10 +333,15 @@ blacklist_default_parent <- data.frame(
   from = "default",
   to   = vars_sem_default,
   stringsAsFactors = FALSE
-)
 
+  )
+
+library(bnlearn)
 dev.off()
 bn.bds <- hc(df_train2, score = "bds", blacklist = blacklist_default_parent)
+
+
+
 graphviz.plot(bn.bds)
 bn.bds2 <- hc(df_train2, score = "bds", iss = 10) # não sei o que é esse iss
 graphviz.plot(bn.bds2)

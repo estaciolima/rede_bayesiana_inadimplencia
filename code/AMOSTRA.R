@@ -10,7 +10,8 @@ renv::snapshot()
 renv::restore()
 
 df <- data.table::fread("data/size/accepted_2007_to_2018Q4.csv")
-df_sample <- df[sample(.N, 250000)]
+df_sample <- df %>% filter(str_detect(issue_d, "2014"))
+# df_sample <- df[sample(.N, 250000)]
 
 arrow::write_parquet(
   x = df_sample,

@@ -474,3 +474,42 @@ rm_var_alta_corr <- function(df, target_var, limite_cor_feature = 0.6) {
   cat("✅ Variáveis identificadas para remoção (mantendo a mais preditiva para", target_var, "): \n")
   return(variaveis_para_remover)
 }
+
+##### 
+# Discretização de variável numérica otimizada via qui-quadrado
+discretizar_var_num <- function(x, y, n_min = 2, n_max = 4) {
+  
+  dados_completos <- data.frame(x = x, y = y) %>% na.omit()
+  x_clean <- dados_completos$x
+  y_clean <- dados_completos$y
+  
+  num_valores_unicos <- length(unique(x_clean))
+  
+  n_max_ajustado <- min(n_max, num_valores_unicos)
+  
+  melhor_score <- -Inf
+  melhor_n <- n_min
+  
+  for (n_teste in n_min:n_max_ajustado) {
+    
+    x_binned <- cut_number(x = x_clean, n = n_teste)
+    tabela_contingencia <- table(x_binned, y_clean)
+    
+    if (all(dim(tabela_contingencia) > 1) && all(tabela_contingencia > 0)) {
+      score_atual <- suppressWarnings(chisq.test(tabela_contingencia))$statistic
+    } else {
+      score_atual <- -Inf # Score baixo para tabelas ruins
+    }
+    
+    if (score_atual > melhor_score) {
+      melhor_score <- score_atual
+      melhor_n <- n_teste
+    }
+  }
+  
+  message(paste("Discretizando com n =", melhor_n))
+  categorias_finais <- cut_number(x = x, n = melhor_n)
+  
+  return(categorias_finais)
+}
+
