@@ -43,7 +43,7 @@ pre_processar <- function(df) {
   df <- df %>% select(-any_of(vars_leakage)) %>% 
     select(-url, # inútil
            -id, # inútil
-           -policy_code, # inútil
+           -policy_code, # constante
            -earliest_cr_line, # inútil
            -funded_amnt_inv, # duplicada
            -title, # duplicada
@@ -242,145 +242,145 @@ quantize_with_zero_bin <- function(df,
   return(list(df = df_out, cuts = cuts_list))
 }
 
-avaliar_bn <- function(dag,
-                       df_train,
-                       df_val,
-                       target   = "default",
-                       positive = "1") {
-  # Ajustar parâmetros da BN no treino
-  bn_model <- bn.fit(dag, data = df_train)
-  
-  # Predizer na validação com probabilidade
-  pred_probs <- predict(bn_model,
-                        node = target,
-                        data = df_val,
-                        prob = TRUE)
-  
-  # Extrair matriz de probabilidades do atributo "prob"
-  probs_matrix <- attr(pred_probs, "prob")
-  if (is.null(probs_matrix)) {
-    stop("predict(..., prob = TRUE) não retornou atributo 'prob'.")
-  }
-  
-  # Verdadeiro y
-  y_true <- df_val[[target]]
-  if (!is.factor(y_true)) {
-    y_true <- factor(y_true)
-  }
-  levs <- levels(y_true)
-  
-  # Garantir nomes das linhas da matriz de probs
-  if (is.null(rownames(probs_matrix))) {
-    # assume que a ordem das linhas corresponde a levels(y_true)
-    rownames(probs_matrix) <- levs
-  }
-  
-  # Checar se a classe positiva existe
-  if (!(positive %in% rownames(probs_matrix))) {
-    stop(paste("Classe positiva", positive,
-               "não encontrada nas linhas de probs_matrix."))
-  }
-  
-  # Probabilidade da classe positiva
-  prob_pos <- as.numeric(probs_matrix[positive, ])
-  
-  # Classe negativa (assume problema binário)
-  negative <- setdiff(levs, positive)[1]
-  
-  # -------------------------
-  # Métricas com threshold padrão 0.5
-  # -------------------------
-  y_pred_default <- ifelse(prob_pos >= 0.5, positive, negative)
-  y_pred_default <- factor(y_pred_default, levels = levs)
-  
-  acc_default <- mean(y_pred_default == y_true)
-  F1_default  <- caret::F_meas(y_pred_default, y_true, relevant = positive)
-  conf_default <- table(Predito = y_pred_default, Real = y_true)
-  
-  # -------------------------
-  # AUC (usando pROC)
-  # -------------------------
-  roc_obj <- pROC::roc(response = y_true,
-                       predictor = prob_pos)
-  auc_val <- as.numeric(pROC::auc(roc_obj))
-  
-  # -------------------------
-  # Varredura de thresholds: precision, recall, F1
-  # -------------------------
-  ths <- seq(0, 1, by = 0.01)
-  
-  resultados <- sapply(ths, function(t) {
-    # Predição binária com threshold t
-    y_pred <- ifelse(prob_pos >= t, positive, negative)
-    y_pred <- factor(y_pred, levels = levs)
-    
-    conf <- table(Predito = y_pred, Real = y_true)
-    
-    # Como y_pred e y_true têm levels fixos, conf tem sempre as 2 x 2 combinações
-    TP <- conf[positive, positive]
-    FP <- sum(conf[positive, , drop = FALSE]) - TP
-    FN <- sum(conf[, positive, drop = FALSE]) - TP
-    
-    # Se não tem positivos preditos ou reais, define tudo como 0
-    if ((TP + FP) == 0 || (TP + FN) == 0) {
-      return(c(precision = 0, recall = 0, F1 = 0))
-    }
-    
-    prec <- TP / (TP + FP)
-    rec  <- TP / (TP + FN)
-    
-    if ((prec + rec) == 0) {
-      return(c(precision = 0, recall = 0, F1 = 0))
-    }
-    
-    F1 <- 2 * prec * rec / (prec + rec)
-    
-    c(precision = prec,
-      recall    = rec,
-      F1        = F1)
-  })
-  
-  # resultados é uma matriz 3 x length(ths)
-  f1_vec     <- resultados["F1", ]
-  prec_vec   <- resultados["precision", ]
-  recall_vec <- resultados["recall", ]
-  
-  # Melhor F1
-  best_idx_f1 <- which.max(f1_vec)
-  best_th_f1  <- ths[best_idx_f1]
-  best_f1     <- f1_vec[best_idx_f1]
-  
-  # Melhor precision
-  best_idx_prec <- which.max(prec_vec)
-  best_th_prec  <- ths[best_idx_prec]
-  best_prec     <- prec_vec[best_idx_prec]
-  
-  # Melhor recall
-  best_idx_rec <- which.max(recall_vec)
-  best_th_rec  <- ths[best_idx_rec]
-  best_recall  <- recall_vec[best_idx_rec]
-  
-  # -------------------------
-  # Retorno
-  # -------------------------
-  list(
-    dag      = dag,
-    bn_model = bn_model,
-    roc      = roc_obj,
-    metrics  = list(
-      auc                 = auc_val,
-      acc_default         = acc_default,
-      F1_default          = F1_default,
-      conf_default        = conf_default,
-      best_threshold_F1   = best_th_f1,
-      F1_best             = best_f1,
-      best_threshold_prec = best_th_prec,
-      prec_best           = best_prec,
-      best_threshold_rec  = best_th_rec,
-      recall_best         = best_recall
-    )
-  )
-}
+# avaliar_bn <- function(dag,
+#                        df_train,
+#                        df_val,
+#                        target   = "default",
+#                        positive = "1") {
+#   # Ajustar parâmetros da BN no treino
+#   bn_model <- bn.fit(dag, data = df_train)
+#   
+#   # Predizer na validação com probabilidade
+#   pred_probs <- predict(bn_model,
+#                         node = target,
+#                         data = df_val,
+#                         prob = TRUE)
+#   
+#   # Extrair matriz de probabilidades do atributo "prob"
+#   probs_matrix <- attr(pred_probs, "prob")
+#   if (is.null(probs_matrix)) {
+#     stop("predict(..., prob = TRUE) não retornou atributo 'prob'.")
+#   }
+#   
+#   # Verdadeiro y
+#   y_true <- df_val[[target]]
+#   if (!is.factor(y_true)) {
+#     y_true <- factor(y_true)
+#   }
+#   levs <- levels(y_true)
+#   
+#   # Garantir nomes das linhas da matriz de probs
+#   if (is.null(rownames(probs_matrix))) {
+#     # assume que a ordem das linhas corresponde a levels(y_true)
+#     rownames(probs_matrix) <- levs
+#   }
+#   
+#   # Checar se a classe positiva existe
+#   if (!(positive %in% rownames(probs_matrix))) {
+#     stop(paste("Classe positiva", positive,
+#                "não encontrada nas linhas de probs_matrix."))
+#   }
+#   
+#   # Probabilidade da classe positiva
+#   prob_pos <- as.numeric(probs_matrix[positive, ])
+#   
+#   # Classe negativa (assume problema binário)
+#   negative <- setdiff(levs, positive)[1]
+#   
+#   # -------------------------
+#   # Métricas com threshold padrão 0.5
+#   # -------------------------
+#   y_pred_default <- ifelse(prob_pos >= 0.5, positive, negative)
+#   y_pred_default <- factor(y_pred_default, levels = levs)
+#   
+#   acc_default <- mean(y_pred_default == y_true)
+#   F1_default  <- caret::F_meas(y_pred_default, y_true, relevant = positive)
+#   conf_default <- table(Predito = y_pred_default, Real = y_true)
+#   
+#   # -------------------------
+#   # AUC (usando pROC)
+#   # -------------------------
+#   roc_obj <- pROC::roc(response = y_true,
+#                        predictor = prob_pos)
+#   auc_val <- as.numeric(pROC::auc(roc_obj))
+#   
+#   # -------------------------
+#   # Varredura de thresholds: precision, recall, F1
+#   # -------------------------
+#   ths <- seq(0, 1, by = 0.01)
+#   
+#   resultados <- sapply(ths, function(t) {
+#     # Predição binária com threshold t
+#     y_pred <- ifelse(prob_pos >= t, positive, negative)
+#     y_pred <- factor(y_pred, levels = levs)
+#     
+#     conf <- table(Predito = y_pred, Real = y_true)
+#     
+#     # Como y_pred e y_true têm levels fixos, conf tem sempre as 2 x 2 combinações
+#     TP <- conf[positive, positive]
+#     FP <- sum(conf[positive, , drop = FALSE]) - TP
+#     FN <- sum(conf[, positive, drop = FALSE]) - TP
+#     
+#     # Se não tem positivos preditos ou reais, define tudo como 0
+#     if ((TP + FP) == 0 || (TP + FN) == 0) {
+#       return(c(precision = 0, recall = 0, F1 = 0))
+#     }
+#     
+#     prec <- TP / (TP + FP)
+#     rec  <- TP / (TP + FN)
+#     
+#     if ((prec + rec) == 0) {
+#       return(c(precision = 0, recall = 0, F1 = 0))
+#     }
+#     
+#     F1 <- 2 * prec * rec / (prec + rec)
+#     
+#     c(precision = prec,
+#       recall    = rec,
+#       F1        = F1)
+#   })
+#   
+#   # resultados é uma matriz 3 x length(ths)
+#   f1_vec     <- resultados["F1", ]
+#   prec_vec   <- resultados["precision", ]
+#   recall_vec <- resultados["recall", ]
+#   
+#   # Melhor F1
+#   best_idx_f1 <- which.max(f1_vec)
+#   best_th_f1  <- ths[best_idx_f1]
+#   best_f1     <- f1_vec[best_idx_f1]
+#   
+#   # Melhor precision
+#   best_idx_prec <- which.max(prec_vec)
+#   best_th_prec  <- ths[best_idx_prec]
+#   best_prec     <- prec_vec[best_idx_prec]
+#   
+#   # Melhor recall
+#   best_idx_rec <- which.max(recall_vec)
+#   best_th_rec  <- ths[best_idx_rec]
+#   best_recall  <- recall_vec[best_idx_rec]
+#   
+#   # -------------------------
+#   # Retorno
+#   # -------------------------
+#   list(
+#     dag      = dag,
+#     bn_model = bn_model,
+#     roc      = roc_obj,
+#     metrics  = list(
+#       auc                 = auc_val,
+#       acc_default         = acc_default,
+#       F1_default          = F1_default,
+#       conf_default        = conf_default,
+#       best_threshold_F1   = best_th_f1,
+#       F1_best             = best_f1,
+#       best_threshold_prec = best_th_prec,
+#       prec_best           = best_prec,
+#       best_threshold_rec  = best_th_rec,
+#       recall_best         = best_recall
+#     )
+#   )
+# }
 
 
 

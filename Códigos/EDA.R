@@ -206,9 +206,60 @@ df_factor_only <- df_reduced_cat %>%
 df_factor_only <- as.data.frame(df_factor_only)
 
 df_train_cat <- df_factor_only %>% slice(train_idx)
-mb_vars <- mmpc(df_train_cat, target = "default")
 
-
+# seleção por markov blanket
 mb_vars <- learn.mb(df_train_cat,
                     node   = "default",
                     method = "iamb")
+
+
+df_reduced_mb <- df_reduced_cat %>% select(all_of(c(mb_vars, "default")))
+df_reduced_mb <- as.data.frame(df_reduced_mb) # conversão necessária para trabalhar corretamente com bnlearn
+df_train_mb <- df_reduced_mb %>% slice(train_idx)
+df_val_mb <- df_reduced_mb %>% slice(val_idx)
+
+dev.off()
+
+# lista de candidatos de estrutura – só usando o TREINO
+candidatos_dag <- list(
+  hc_bde_iss1  = hc(df_train_mb, score = "bde", iss = 1),
+  hc_bde_iss10 = hc(df_train_mb, score = "bde", iss = 10),
+  hc_bds       = hc(df_train_mb, score = "bds")
+)
+
+# Se quiser incluir métodos constraint-based, converta CPDAG -> DAG
+cpdag_pc  <- pc.stable(df_train_mb, undirected = FALSE)
+graphviz.plot(cpdag_pc)
+dag_pc    <- cextend(cpdag_pc)
+
+cpdag_hit <- si.hiton.pc(df_train_mb, undirected = FALSE)
+dag_hit   <- cextend(cpdag_hit)
+
+candidatos_dag$pc_stable  <- dag_pc
+candidatos_dag$si_hiton   <- dag_hit
+
+resultados <- purrr::imap(candidatos_dag, ~{
+  cat("Avaliando:", .y, "\n")
+  avaliar_bn(dag      = .x,
+             df_train = df_train_mb,
+             df_val   = df_val_mb,
+             target   = "default",
+             positive = "1")
+})
+
+
+resumo <- purrr::imap_dfr(resultados, ~{
+  tibble::tibble(
+    modelo         = .y,
+    auc            = .x$metrics$auc,
+    F1_default     = .x$metrics$F1_default,
+    F1_best        = .x$metrics$F1_best,
+    best_threshold_F1 = .x$metrics$best_threshold_F1,
+    prec_best = .x$metrics$prec_best,
+    best_threshold_prec = .x$metrics$best_threshold_prec,
+    recall_best = .x$metrics$recall_best,
+    best_threshold_rec = .x$metrics$best_threshold_rec
+  )
+})
+
+resumo

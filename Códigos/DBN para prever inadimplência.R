@@ -64,6 +64,12 @@ for(k in ks){
   res <- quantize_with_zero_bin(df, train_idx, k = k)
   df_cat <- res$df
   
+  
+  df_cat <- df_cat %>% 
+    select(where(~ !is.numeric(.x)))
+  
+  df_cat <- as.data.frame(df_cat)
+  
   df_train_cat <- df_cat[train_idx, ]
   df_val_cat   <- df_cat[val_idx,   ]
   
