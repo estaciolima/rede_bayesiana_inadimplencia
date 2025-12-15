@@ -2,7 +2,7 @@
 set.seed(123)
 
 # Preparar o ambiente renv
-install.packages("renv")
+# install.packages("renv")
 renv::init()
 
 renv::snapshot()

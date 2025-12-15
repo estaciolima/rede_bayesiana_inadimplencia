@@ -2,6 +2,8 @@ library(dplyr)
 library(tidymodels)
 library(bnlearn)
 library(pROC)
+# BiocManager::install("Rgraphviz")
+library(Rgraphviz)
 
 set.seed(123)
 
@@ -53,9 +55,6 @@ blacklist <- data.frame(
 
 dag <- hc(train, blacklist = blacklist)
 
-library(bnlearn)
-# BiocManager::install("Rgraphviz")
-library(Rgraphviz)
 # -------------
 subgraphs <- list(
   Perfil = c(
