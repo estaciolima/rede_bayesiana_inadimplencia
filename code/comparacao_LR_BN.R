@@ -88,7 +88,6 @@ graphviz.plot(
   main = "DAG - Risco de Crédito"
 )
 
-
 # ------------
 parents(dag, "default")
 #O evento de default é diretamente influenciado pela qualidade do crédito (grade),
@@ -164,7 +163,13 @@ auc_tan <- yardstick::roc_auc(
   .pred_yes
 )$.estimate
 
-
+graphviz.plot(
+  dag_tan,
+  layout = "dot",
+  groups = subgraphs,
+  highlight = list(nodes = "default",col = "tomato", fill = "orange"),
+  main = "DAG - Tree-Augmented Naive Bayes "
+)
 
 
 # Grafico curva ROC
@@ -387,8 +392,8 @@ plot_ks <- function(
       linetype = "dashed"
     ) +
     labs(
-      x = "Probabilidade predita",
-      y = "Distribuição acumulada",
+      x = "Prob. predita",
+      y = "Acm",
       color = "",
       title = titulo,
       subtitle = paste0("KS = ", round(ks_value, 3))
