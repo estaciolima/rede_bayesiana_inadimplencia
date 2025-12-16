@@ -397,7 +397,14 @@ plot_ks <- function(
       color = "",
       title = titulo,
       subtitle = paste0("KS = ", round(ks_value, 3))
+    ) + theme(
+      plot.title = element_text(size = 10),
+      plot.subtitle = element_text(size = 8),
+      axis.title = element_text(size = 8),
+      axis.text = element_text(size = 7),
+      legend.position = "none"
     ) 
+    
   
   list(
     ks = ks_value,
@@ -430,11 +437,17 @@ ks_tan <- plot_ks(
   titulo = "Tree-Augmented Naive Bayes"
 )
 
-gridExtra::grid.arrange(
-  ks_logit$plot,
-  ks_bn$plot,
-  ks_naive$plot,
-  ks_tan$plot,
-  ncol = 2
-)
-  
+
+# ler .rds
+ks_dag_full <- readRDS("data/size/plot dag full.rds")
+ks_dag_full$plot
+
+library(patchwork)
+
+# Agrupe os plots
+
+(ks_dag_full$plot) /
+( ks_logit$plot + ks_bn$plot )/
+(ks_naive$plot + ks_tan$plot)
+   
+   

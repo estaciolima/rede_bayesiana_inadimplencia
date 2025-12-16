@@ -29,7 +29,28 @@ df <- df %>%
   ) %>%
   select(-loan_status)
 
-df$default %>% janitor::tabyl() %>% arrange(desc(n))
+df$default %>% janitor::tabyl() %>% arrange(desc(n)) 
+
+tab = df %>%
+  group_by(default) %>%
+  summarise(n = n()) %>%
+  mutate(percentual = n / sum(n) * 100)
+
+tab$default <- if_else(tab$default == 1, 'Yes', 'No')
+
+# gerar grafico DEFAULT com o percentual e com um apecto de artico 
+# inserir legenda dos valores
+# remover o eixo y  
+ggplot(tab, aes(x = factor(default), y = percentual, fill = factor(default))) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = paste0(round(percentual, 0), "%")), vjust = -0.1) +
+  labs(title = "",
+       subtitle = "",
+       x = "Inadimplência",
+       y = "(%)") +
+  scale_fill_manual(values = c("No" = "steelblue", "Yes" = "tomato")) +
+  theme_minimal() +
+  theme(legend.position = "none")
 
 #
 # Remover variáveis irrelevantes
