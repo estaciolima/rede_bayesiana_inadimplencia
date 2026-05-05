@@ -2,7 +2,9 @@
 .Rhistory
 .RData
 .Ruserdata
-
+.DS_Store
 # Pasta com dados - Muito grande para colocar no git
 /Dados
 /Referências
+/data/size
+data/.DS_Store
