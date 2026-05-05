@@ -101,7 +101,8 @@ avaliar_bn <- function(dag, df_train, df_val,
       acc_default = acc_default,
       F1_default = F1_default,
       F1_best = max(resultados["F1",]),
-      best_threshold_F1 = ths[which.max(resultados["F1",])]
+      best_threshold_F1 = ths[which.max(resultados["F1",])],
+      prob = prob_pos
     )
   )
 }
@@ -122,8 +123,8 @@ df <- fread("Dados/dataset.csv") %>%
 n <- nrow(df)
 idx_all <- sample(n)
 
-train_idx <- idx_all[1:floor(0.6*n)]
-val_idx   <- idx_all[(floor(0.6*n)+1):floor(0.8*n)]
+train_idx <- idx_all[1:floor(0.8*n)]
+teste_idx   <- idx_all[(floor(0.8*n)+1):n]
 
 ###############################################
 # 4) EXPERIMENTO A — RF → BN (LOW MEMORY)
@@ -192,7 +193,6 @@ cat("=== EXPERIMENTO B: BN completa → MB ===\n")
 
 res <- quantize_with_zero_bin(df, train_idx, k=3)
 df_cat_all <- res$df %>% select(where(~!is.numeric(.))) %>% as.data.frame()
-rm(res); gc()
 
 df_train_all <- prepare_for_bn(df_cat_all[train_idx,])
 df_val_all   <- prepare_for_bn(df_cat_all[val_idx,])
@@ -204,6 +204,63 @@ cat(">> HC completo (BDe, ISS=10)\n")
 dag_full <- readRDS("dag_full.rds")
 graphviz.plot(dag_full)
 res_full <- avaliar_bn(dag_full, df_train_all, df_val_all)
+  
+plot_ks_from_probs <- function(
+    prob_pos,
+    truth,
+    positive = "1",
+    titulo = "Curva KS"
+) {
+  
+  library(dplyr)
+  library(ggplot2)
+  
+  df_ks <- data.frame(
+    prob = prob_pos,
+    evento = ifelse(truth == positive, 1, 0)
+  ) %>%
+    arrange(prob) %>%
+    mutate(
+      cum_evento = cumsum(evento) / sum(evento),
+      cum_nao_evento = cumsum(1 - evento) / sum(1 - evento)
+    )
+  
+  ks_value <- max(abs(df_ks$cum_evento - df_ks$cum_nao_evento), na.rm = TRUE)
+  ks_idx   <- which.max(abs(df_ks$cum_evento - df_ks$cum_nao_evento))
+  ks_prob  <- df_ks$prob[ks_idx]
+  
+  p <- ggplot(df_ks) +
+    geom_line(aes(x = prob, y = cum_evento, color = "no")) +
+    geom_line(aes(x = prob, y = cum_nao_evento, color = "yes")) +
+    geom_vline(xintercept = ks_prob, linetype = "dashed") +
+    labs(
+      x = "Prob. predita",
+      y = "Acm",
+      color = "",
+      title = titulo,
+      subtitle = paste0("KS = ", round(ks_value, 3))
+    )
+  
+  list(
+    ks = ks_value,
+    plot = p,
+    data = df_ks
+  )
+}
+
+# probabilidade da classe positiva
+prob_pos <- res_full$metrics$prob   # vetor numérico
+y_true   <- df_val_all$default
+
+res_ks <- plot_ks_from_probs(
+  prob_pos = prob_pos,
+  truth    = y_true,
+  positive = "1",
+  titulo   = "Rede Bayesiana Completa"
+)
+
+res_ks$ks
+res_ks$plot
 
 cat("AUC:", res_full$metrics$auc,
     "F1:", res_full$metrics$F1_best, "\n")
